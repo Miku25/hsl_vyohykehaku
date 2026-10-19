@@ -152,6 +152,9 @@ button:focus-visible, .ticket:focus-visible, .zone-toggle:focus-visible, a:focus
 .btn.secondary { background: transparent; color: var(--accent); border: 1px solid var(--line); }
 .btn-row { display: flex; flex-wrap: wrap; gap: 8px; }
 .btn-row .btn { flex: 1 1 140px; }
+#actions { display: grid; gap: 12px; }
+.link-group { display: grid; gap: 6px; }
+.link-group .section-label { margin: 0; }
 .empty { font-size: 13.5px; color: var(--muted); margin: 0; }
 .spinner { display: inline-block; width: 14px; height: 14px; border: 2px solid var(--line); border-top-color: var(--accent); border-radius: 50%; animation: spin 0.8s linear infinite; vertical-align: -2px; }
 @keyframes spin { to { rotate: 360deg; } }
@@ -505,6 +508,10 @@ button:focus-visible, .ticket:focus-visible, .zone-toggle:focus-visible, a:focus
   const fmtDist = m => m < 1000 ? `${Math.round(m / 10) * 10} m` : `${(m / 1000).toFixed(1).replace(".", ",")} km`;
   const reittiopasPoint = p => p ? encodeURIComponent(`${p.label}::${p.lat.toFixed(6)},${p.lon.toFixed(6)}`) : "-";
   const reittiopasUrl = (a, b) => `https://reittiopas.hsl.fi/reitti/${reittiopasPoint(a)}/${reittiopasPoint(b)}`;
+  // Google Maps URLs allow one travel mode per link and no via-stops on transit routes
+  const gmapsUrl = (a, b, mode) => "https://www.google.com/maps/dir/?" + new URLSearchParams({
+    api: "1", origin: `${a.lat.toFixed(6)},${a.lon.toFixed(6)}`, destination: `${b.lat.toFixed(6)},${b.lon.toFixed(6)}`, travelmode: mode,
+  });
 
   async function plan(opts = {}) {
     const token = ++state.token;
@@ -601,9 +608,18 @@ button:focus-visible, .ticket:focus-visible, .zone-toggle:focus-visible, a:focus
     resultEl.querySelectorAll(".stop-item").forEach((b, j) => b.setAttribute("aria-pressed", String(j === i)));
     const actions = document.getElementById("actions");
     const stopPoint = { lat: r.s.lat, lon: r.s.lon, label: `${r.s.name} (${r.s.code})` };
+    const link = (cls, href, text) => el("a", { class: cls, href, target: "_blank", rel: "noopener" }, text);
     actions.replaceChildren(
-      el("a", { class: "btn", href: reittiopasUrl(stopPoint, state.to), target: "_blank", rel: "noopener" }, state.to ? "Jatka pysäkiltä Reittioppaassa ↗" : "Pysäkin reitit Reittioppaassa ↗"),
-      state.to ? el("a", { class: "btn secondary", href: reittiopasUrl(state.from, state.to), target: "_blank", rel: "noopener" }, "Vertaa: koko matka ↗") : null,
+      el("div", { class: "link-group" },
+        el("h2", { class: "section-label" }, "HSL Reittiopas"),
+        el("div", { class: "btn-row" },
+          link("btn", reittiopasUrl(stopPoint, state.to), state.to ? "Jatka pysäkiltä ↗" : "Pysäkin reitit ↗"),
+          state.to ? link("btn secondary", reittiopasUrl(state.from, state.to), "Vertaa: koko matka ↗") : null)),
+      el("div", { class: "link-group" },
+        el("h2", { class: "section-label" }, "Google Maps"),
+        el("div", { class: "btn-row" },
+          link("btn secondary", gmapsUrl(state.from, stopPoint, "walking"), "Kävely pysäkille ↗"),
+          state.to ? link("btn secondary", gmapsUrl(stopPoint, state.to, "transit"), "Pysäkiltä perille ↗") : null)),
     );
 
     const token = state.token;

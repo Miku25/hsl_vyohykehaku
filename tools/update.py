@@ -20,8 +20,12 @@ UA = {"User-Agent": "hsl-vyohykekartta/1.0"}
 
 
 def get(url):
-    with urllib.request.urlopen(urllib.request.Request(url, headers=UA), timeout=120) as r:
-        return r.read()
+    print(f"GET {url}", flush=True)
+    try:
+        with urllib.request.urlopen(urllib.request.Request(url, headers=UA), timeout=120) as r:
+            return r.read()
+    except Exception as e:
+        sys.exit(f"Lataus epäonnistui: {url}\n  {type(e).__name__}: {e}")
 
 
 def newest_zone_service():

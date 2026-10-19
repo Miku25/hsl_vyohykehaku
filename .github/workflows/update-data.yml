@@ -25,10 +25,15 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - uses: actions/setup-python@v5
+        if: github.event_name != 'push'
+        with:
+          python-version: "3.12"
+
       - name: Hae uusin data (ei tavallisissa pusheissa)
         if: github.event_name != 'push'
         run: |
-          pip install numpy
+          python -m pip install --quiet numpy
           python -I tools/update.py "$GITHUB_WORKSPACE"
 
       - name: Tallenna muuttunut data repoon

@@ -57,6 +57,17 @@ body { background: var(--bg); color: var(--fg); font: 15px/1.45 var(--font-ui); 
   box-shadow: var(--shadow); overflow: hidden;
 }
 .panel-scroll { overflow-y: auto; padding: 18px 18px 14px; display: grid; gap: 18px; align-content: start; }
+
+/* Resize handles: right edge on wide screens, a grabber on top of the bottom sheet on phones */
+.sheet-handle { display: none; }
+.side-handle { position: absolute; z-index: 3; top: 0; right: 0; width: 10px; height: 100%; cursor: ew-resize; touch-action: none; }
+.side-handle::after {
+  content: ""; position: absolute; top: 50%; right: 3px; width: 4px; height: 44px; translate: 0 -50%;
+  border-radius: 2px; background: var(--muted); opacity: 0; transition: opacity 0.15s;
+}
+.panel:hover .side-handle::after, .side-handle:focus-visible::after, .side-handle.dragging::after { opacity: 0.5; }
+.side-handle:focus-visible { outline: none; }
+.panel.resizing { user-select: none; }
 header h1 { font: 800 22px/1.1 var(--font-display); margin: 0; letter-spacing: -0.01em; text-wrap: balance; }
 header p { margin: 4px 0 0; color: var(--muted); font-size: 13.5px; }
 
@@ -210,7 +221,15 @@ button:focus-visible, .ticket:focus-visible, .zone-toggle:focus-visible, a:focus
 @media (max-width: 720px) {
   .panel { top: auto; left: 0; right: 0; bottom: 0; width: auto; max-height: 52%; border-radius: 16px 16px 0 0; padding-bottom: env(safe-area-inset-bottom, 0px); }
   .panel { display: block; overflow-y: auto; }
-  .panel-scroll { overflow: visible; padding: 14px 16px 12px; gap: 14px; }
+  .panel-scroll { overflow: visible; padding: 4px 16px 12px; gap: 14px; }
+  .side-handle { display: none; }
+  .sheet-handle {
+    display: flex; justify-content: center; position: sticky; top: 0; z-index: 3;
+    padding: 9px 0 8px; background: var(--panel); cursor: ns-resize; touch-action: none;
+  }
+  .sheet-handle span { width: 42px; height: 5px; border-radius: 3px; background: var(--line); }
+  .sheet-handle.dragging span, .sheet-handle:focus-visible span { background: var(--muted); }
+  .sheet-handle:focus-visible { outline: none; }
   header h1 { font-size: 19px; }
   .leaflet-top.leaflet-right { top: env(safe-area-inset-top, 0px); }
 }
@@ -221,6 +240,10 @@ button:focus-visible, .ticket:focus-visible, .zone-toggle:focus-visible, a:focus
 <div id="map" role="application" aria-label="Kartta HSL-vyöhykkeistä"></div>
 
 <aside class="panel" aria-label="Vyöhykkeet ja reittihaku">
+  <div class="sheet-handle" id="sheetHandle" role="separator" aria-orientation="horizontal" tabindex="0"
+       aria-label="Muuta paneelin korkeutta: vedä tai käytä nuolinäppäimiä, napauta pienentääksesi tai suurentaaksesi" title="Vedä muuttaaksesi kokoa"><span></span></div>
+  <div class="side-handle" id="sideHandle" role="separator" aria-orientation="vertical" tabindex="0"
+       aria-label="Muuta paneelin leveyttä: vedä tai käytä nuolinäppäimiä" title="Vedä muuttaaksesi leveyttä"></div>
   <div class="panel-scroll">
     <header>
       <h1>HSL-vyöhykekartta</h1>
@@ -362,6 +385,7 @@ button:focus-visible, .ticket:focus-visible, .zone-toggle:focus-visible, a:focus
   L.control.zoom({ position: "topright" }).addTo(map);
 
   const darkMq = window.matchMedia("(prefers-color-scheme: dark)");
+  const mobileMq = window.matchMedia("(max-width: 720px)"); // same breakpoint as the bottom-sheet CSS
   const isDark = () => document.documentElement.dataset.theme === "dark" || (document.documentElement.dataset.theme !== "light" && darkMq.matches);
   const esri = "https://server.arcgisonline.com/ArcGIS/rest/services/";
   const esriAttr = 'Tiles &copy; <a href="https://www.esri.com">Esri</a>, HERE, Garmin, &copy; OpenStreetMap contributors';
@@ -683,7 +707,11 @@ button:focus-visible, .ticket:focus-visible, .zone-toggle:focus-visible, a:focus
     if (!opts.keepView) {
       const b = line.getBounds().extend([r.s.lat, r.s.lon]);
       if (state.to) b.extend([state.to.lat, state.to.lon]);
-      map.fitBounds(b, { paddingTopLeft: window.innerWidth > 720 ? [410, 40] : [30, 30], paddingBottomRight: window.innerWidth > 720 ? [40, 40] : [30, window.innerHeight * 0.52 + 20], maxZoom: 17 });
+      // Keep the route clear of the panel, whatever size the viewer has dragged it to.
+      const panelBox = document.querySelector(".panel").getBoundingClientRect();
+      map.fitBounds(b, mobileMq.matches
+        ? { paddingTopLeft: [30, 30], paddingBottomRight: [30, window.innerHeight - panelBox.top + 20], maxZoom: 17 }
+        : { paddingTopLeft: [panelBox.right + 40, 40], paddingBottomRight: [40, 40], maxZoom: 17 });
     }
   }
 
@@ -942,6 +970,62 @@ button:focus-visible, .ticket:focus-visible, .zone-toggle:focus-visible, a:focus
     if (r) showDepartures(r);
   });
   renderKeyState();
+
+  // ---------- resizable panel ----------
+  const panelEl = document.querySelector(".panel");
+  const SIZE_STORE = "panelSize";
+  let panelSize = {};
+  try { panelSize = JSON.parse(localStorage.getItem(SIZE_STORE)) || {}; } catch (_) {}
+  const clampH = h => Math.round(Math.min(window.innerHeight * 0.92, Math.max(120, h)));
+  const clampW = w => Math.round(Math.min(640, window.innerWidth * 0.6, Math.max(300, w)));
+  // remember=false re-applies a saved size without overwriting it (e.g. while a phone keyboard shrinks the window)
+  function setHeight(h, remember = true) { const v = clampH(h); if (remember) panelSize.h = v; panelEl.style.height = v + "px"; panelEl.style.maxHeight = "none"; }
+  function setWidth(w, remember = true) { const v = clampW(w); if (remember) panelSize.w = v; panelEl.style.width = v + "px"; }
+  function applyPanelSize() {
+    panelEl.style.height = panelEl.style.maxHeight = panelEl.style.width = "";
+    if (mobileMq.matches && panelSize.h) setHeight(panelSize.h, false);
+    if (!mobileMq.matches && panelSize.w) setWidth(panelSize.w, false);
+  }
+  const savePanelSize = () => { try { localStorage.setItem(SIZE_STORE, JSON.stringify(panelSize)); } catch (_) {} };
+
+  function wireResize(handle, axis) {
+    handle.addEventListener("pointerdown", e => {
+      if (e.button !== 0) return;
+      e.preventDefault();
+      handle.setPointerCapture(e.pointerId);
+      handle.classList.add("dragging"); panelEl.classList.add("resizing");
+      const start = { x: e.clientX, y: e.clientY, h: panelEl.offsetHeight, w: panelEl.offsetWidth };
+      let moved = false;
+      const move = ev => {
+        const dx = ev.clientX - start.x, dy = ev.clientY - start.y;
+        if (Math.abs(axis === "y" ? dy : dx) > 4) moved = true;
+        if (axis === "y") setHeight(start.h - dy); else setWidth(start.w + dx);
+      };
+      const end = () => {
+        handle.classList.remove("dragging"); panelEl.classList.remove("resizing");
+        handle.removeEventListener("pointermove", move);
+        handle.removeEventListener("pointerup", end);
+        handle.removeEventListener("pointercancel", end);
+        // A tap on the sheet grabber toggles between a small sheet (more map) and a tall one.
+        if (axis === "y" && !moved) setHeight(panelEl.offsetHeight > window.innerHeight * 0.3 ? 0 : window.innerHeight * 0.55);
+        savePanelSize();
+      };
+      handle.addEventListener("pointermove", move);
+      handle.addEventListener("pointerup", end);
+      handle.addEventListener("pointercancel", end);
+    });
+    handle.addEventListener("keydown", e => {
+      const step = e.shiftKey ? 160 : 48;
+      const d = axis === "y" ? ({ ArrowUp: step, ArrowDown: -step })[e.key] : ({ ArrowRight: step, ArrowLeft: -step })[e.key];
+      if (d) { e.preventDefault(); if (axis === "y") setHeight(panelEl.offsetHeight + d); else setWidth(panelEl.offsetWidth + d); savePanelSize(); }
+      else if (axis === "y" && (e.key === "Enter" || e.key === " ")) { e.preventDefault(); setHeight(panelEl.offsetHeight > window.innerHeight * 0.3 ? 0 : window.innerHeight * 0.55); savePanelSize(); }
+    });
+  }
+  wireResize(document.getElementById("sheetHandle"), "y");
+  wireResize(document.getElementById("sideHandle"), "x");
+  applyPanelSize();
+  mobileMq.addEventListener?.("change", applyPanelSize);
+  window.addEventListener("resize", applyPanelSize);
 
   // ---------- my location ----------
   const locateBtn = document.getElementById("locateBtn");

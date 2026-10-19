@@ -3,7 +3,6 @@
 Run from the project folder:  python -I tools/prep.py
 """
 import csv
-import datetime
 import io
 import json
 import sys
@@ -168,7 +167,6 @@ meta = {
     "feedVersion": feed.get("feed_version", "").strip(),
     "prices": fares,
     "approxZones": sorted({f["properties"]["zone"] for f in features if f["properties"].get("approx")}),
-    "builtAt": datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds"),
 }
 (OUT / "meta.js").write_text("window.HSL_META=" + json.dumps(meta, separators=(",", ":")) + ";\n", encoding="utf-8")
 print("meta", meta)

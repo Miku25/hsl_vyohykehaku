@@ -8,6 +8,10 @@ Kartta HSL:n maksuvyöhykkeistä A–E ja haku lähimmälle pysäkille, jolta om
 - `tools/prep.py` – muuntaa ladatun aineiston `data/`-kansioon.
 - `.github/workflows/update-data.yml` – ajaa päivityksen joka aamu ja julkaisee sivun GitHub Pagesiin.
 
+Jatkoyhteyksien lähtöajat haetaan HSL:n Digitransit-rajapinnasta. Jokainen käyttäjä liittää oman
+API-avaimensa (https://portal-api.digitransit.fi) sivun kohtaan "Reaaliaikaiset lähdöt"; avain
+tallentuu vain selaimeen eikä ole tässä repossa.
+
 Päivitys käsin: `python -I tools/update.py` (tarvitsee numpyn).
 
 Lähteet: HSL:n maksuvyöhykkeet (CC BY 4.0, HSL), HSL GTFS, pohjakartta Esri / OpenStreetMap,

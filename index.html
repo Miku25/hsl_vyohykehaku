@@ -97,6 +97,26 @@ input[type="search"] {
   background: var(--bg); color: var(--fg); font: inherit;
 }
 input[type="search"]:focus { outline: 2px solid var(--accent); outline-offset: -1px; border-color: transparent; }
+.text-input { flex: 1; min-width: 0; padding: 9px 10px; border: 1px solid var(--line); border-radius: 9px; background: var(--bg); color: var(--fg); font: inherit; }
+.text-input:focus { outline: 2px solid var(--accent); outline-offset: -1px; border-color: transparent; }
+
+/* Settings (Digitransit key) */
+.settings { border-top: 1px solid var(--line); padding-top: 12px; }
+.settings summary { cursor: pointer; font: 600 11.5px/1 var(--font-display); text-transform: uppercase; letter-spacing: 0.08em; color: var(--muted); }
+.settings-body { display: grid; gap: 8px; margin-top: 10px; }
+.settings-body .hint a { color: var(--accent); }
+.field-label { font-size: 12.5px; color: var(--muted); }
+.key-ok { color: var(--ok); }
+
+/* Next departures */
+.deps { display: grid; gap: 6px; }
+.dep { display: grid; grid-template-columns: 3.4em 1fr; gap: 3px 10px; align-items: baseline; padding: 9px 10px; border: 1px solid var(--line); border-radius: 10px; }
+.dep-time { font: 800 19px/1 var(--font-display); font-variant-numeric: tabular-nums; }
+.dep-time.rt { color: var(--ok); }
+.dep-main { min-width: 0; font-size: 14px; }
+.dep-sub { grid-column: 2; color: var(--muted); font-size: 12.5px; }
+.line-badge { display: inline-block; padding: 2px 6px; border-radius: 5px; background: var(--chip); font-weight: 700; font-size: 13px; font-variant-numeric: tabular-nums; }
+.linklike { background: none; border: 0; padding: 0; color: var(--accent); text-decoration: underline; font: inherit; cursor: pointer; }
 .icon-btn {
   flex: none; width: 40px; border: 1px solid var(--line); border-radius: 9px; background: var(--panel);
   color: var(--accent); cursor: pointer; display: grid; place-items: center;
@@ -249,6 +269,20 @@ button:focus-visible, .ticket:focus-visible, .zone-toggle:focus-visible, a:focus
     <section class="result" id="result" aria-live="polite">
       <p class="empty">Valitse lähtöpaikka, niin etsin lähimmät pysäkit, joilta valitsemasi lippu kelpaa, ja kävelyreitin niille.</p>
     </section>
+
+    <details class="settings" id="keySettings">
+      <summary>Reaaliaikaiset lähdöt</summary>
+      <div class="settings-body">
+        <p class="hint">Jatkoyhteyksien lähtöajat haetaan HSL:n Digitransit-rajapinnasta, joka vaatii oman API-avaimen. Hanki avain <a href="https://portal-api.digitransit.fi" target="_blank" rel="noopener">Digitransitin API-portaalista</a> ja liitä se tähän. Avain tallentuu vain tämän laitteen selaimeen.</p>
+        <label class="field-label" for="dtKey">Digitransit-avain</label>
+        <div class="input-row">
+          <input type="password" id="dtKey" class="text-input" autocomplete="off" spellcheck="false" placeholder="Liitä avain tähän">
+          <button type="button" class="btn" id="saveKey">Tallenna</button>
+        </div>
+        <p class="hint" id="keyStatus" aria-live="polite"></p>
+        <button type="button" class="btn secondary" id="removeKey" hidden>Poista avain tästä selaimesta</button>
+      </div>
+    </details>
   </div>
   <footer>
     Vyöhykkeet: HSL, <a href="https://hri.fi/data/fi/dataset/hsl-n-taksavyohykkeet" target="_blank" rel="noopener">HSL:n maksuvyöhykkeet 2026</a> (CC BY 4.0).<span id="approxNote"> Järvenpään E-alue (katkoviiva) on arvioitu pysäkeistä, koska HSL:n aineisto ei vielä kata sitä.</span>
@@ -601,6 +635,7 @@ button:focus-visible, .ticket:focus-visible, .zone-toggle:focus-visible, a:focus
     }
     if (rows.some(r => r.estimate)) parts.push(el("p", { class: "compare" }, "Kävelyreititin ei vastannut, joten ajat ovat linnuntien perusteella arvioituja."));
 
+    parts.push(el("div", { class: "deps", id: "deps" }));
     const actions = el("div", { class: "btn-row", id: "actions" });
     parts.push(actions);
     resultEl.replaceChildren(...parts);
@@ -627,6 +662,7 @@ button:focus-visible, .ticket:focus-visible, .zone-toggle:focus-visible, a:focus
           link("btn secondary", gmapsUrl(state.from, stopPoint, "walking"), "Kävely pysäkille ↗"),
           state.to ? link("btn secondary", gmapsUrl(stopPoint, state.to, "transit"), "Pysäkiltä perille ↗") : null)),
     );
+    showDepartures(r);
 
     const token = state.token;
     walkLayer.clearLayers();
@@ -756,6 +792,156 @@ button:focus-visible, .ticket:focus-visible, .zone-toggle:focus-visible, a:focus
   }
   wireSearch("from");
   wireSearch("to");
+
+  // ---------- next departures (Digitransit; each viewer brings their own API key) ----------
+  const DT_URL = "https://api.digitransit.fi/routing/v2/hsl/gtfs/v1";
+  const KEY_STORE = "digitransitKey";
+  const getKey = () => { try { return localStorage.getItem(KEY_STORE) || ""; } catch (_) { return ""; } };
+  const GQL_MODE_FI = { BUS: "bussi", TRAM: "raitiovaunu", SUBWAY: "metro", RAIL: "juna", FERRY: "lautta" };
+  const fmtTime = t => new Date(t).toLocaleTimeString("fi-FI", { hour: "numeric", minute: "2-digit" });
+  const pad2 = n => String(Math.floor(Math.abs(n))).padStart(2, "0");
+  function isoWithOffset(ms) {
+    const d = new Date(ms), off = -d.getTimezoneOffset();
+    return `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}T${pad2(d.getHours())}:${pad2(d.getMinutes())}:${pad2(d.getSeconds())}`
+      + `${off >= 0 ? "+" : "-"}${pad2(off / 60)}:${pad2(off % 60)}`;
+  }
+  async function dtQuery(query, variables, key = getKey()) {
+    const r = await fetch(DT_URL, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "digitransit-subscription-key": key },
+      body: JSON.stringify({ query, variables }),
+    });
+    if (r.status === 401 || r.status === 403) throw Object.assign(new Error("key"), { kind: "key" });
+    if (r.status === 429) throw Object.assign(new Error("rate"), { kind: "rate" });
+    if (!r.ok) throw new Error("HTTP " + r.status);
+    const j = await r.json();
+    if (j.errors?.length) throw new Error(j.errors[0].message);
+    return j.data;
+  }
+  const PLAN_QUERY = `query($stop: String!, $lat: CoordinateValue!, $lon: CoordinateValue!, $at: OffsetDateTime!) {
+    planConnection(
+      origin: { location: { stopLocation: { stopLocationId: $stop } } }
+      destination: { location: { coordinate: { latitude: $lat, longitude: $lon } } }
+      dateTime: { earliestDeparture: $at }
+      first: 3
+    ) {
+      edges { node { start end numberOfTransfers legs {
+        mode transitLeg
+        start { scheduledTime estimated { time } }
+        from { name stop { gtfsId code } }
+        route { shortName }
+      } } }
+    }
+  }`;
+  const STOP_QUERY = `query($id: String!, $start: Long!) {
+    stop(id: $id) {
+      stoptimesWithoutPatterns(startTime: $start, numberOfDepartures: 5, omitNonPickups: true, timeRange: 7200) {
+        serviceDay realtimeDeparture realtime headsign trip { route { shortName mode } }
+      }
+    }
+  }`;
+  const lineBadge = (name, mode) => el("span", { class: "line-badge", title: GQL_MODE_FI[mode] || "" }, name || GQL_MODE_FI[mode] || mode || "?");
+
+  function openKeySettings() {
+    const d = document.getElementById("keySettings");
+    d.open = true;
+    d.scrollIntoView({ behavior: "smooth", block: "nearest" });
+    document.getElementById("dtKey").focus();
+  }
+
+  async function showDepartures(r, { quiet = false } = {}) {
+    const box = document.getElementById("deps");
+    if (!box) return;
+    if (!getKey()) {
+      box.replaceChildren(el("p", { class: "compare" }, "Näet tässä seuraavan jatkoyhteyden lähtöajan, kun lisäät ",
+        el("button", { type: "button", class: "linklike", onclick: openKeySettings }, "Digitransit-avaimen"), "."));
+      return;
+    }
+    if (!quiet) box.replaceChildren(el("p", { class: "empty" }, el("span", { class: "spinner" }), " Haetaan lähtöjä…"));
+    const token = state.token, sel = state.selected, to = state.to;
+    const stale = () => token !== state.token || sel !== state.selected || to !== state.to;
+    const walkMs = r.sec * 1000;
+    const at = Date.now() + walkMs; // only connections you can still reach on foot
+    const stopId = "HSL:" + r.s.id;
+    const heading = text => el("h2", { class: "section-label", style: "margin:0" }, text);
+    try {
+      if (to) {
+        const d = await dtQuery(PLAN_QUERY, { stop: stopId, lat: to.lat, lon: to.lon, at: isoWithOffset(at) });
+        if (stale()) return;
+        const its = (d.planConnection?.edges || []).map(e => e.node).filter(n => n.legs.some(l => l.transitLeg));
+        if (!its.length) { box.replaceChildren(el("p", { class: "compare" }, "Pysäkiltä ei löytynyt jatkoyhteyttä perille lähiaikoina.")); return; }
+        box.replaceChildren(heading("Seuraavat jatkoyhteydet, joihin ehdit"), ...its.map(n => {
+          const transit = n.legs.filter(l => l.transitLeg);
+          const first = transit[0];
+          const dep = first.start.estimated?.time || first.start.scheduledTime;
+          // Same-named platforms are the same stop to the rider; only call out a genuinely different stop.
+          const other = first.from.name && first.from.name !== r.s.name ? ` · nousu: ${first.from.name}` : "";
+          const changes = n.numberOfTransfers ? ` · ${n.numberOfTransfers} vaihto${n.numberOfTransfers > 1 ? "a" : ""}` : "";
+          return el("div", { class: "dep" },
+            el("span", { class: "dep-time" + (first.start.estimated ? " rt" : ""), title: first.start.estimated ? "Reaaliaikainen" : "Aikataulun mukainen" }, fmtTime(dep)),
+            el("span", { class: "dep-main" }, ...transit.flatMap((l, k) => [k ? " → " : null, lineBadge(l.route?.shortName, l.mode)]), ` · perillä ${fmtTime(n.end)}`),
+            el("span", { class: "dep-sub" }, `Lähde viimeistään ${fmtTime(Date.parse(n.start) - walkMs)}${changes}${other}`));
+        }));
+      } else {
+        const d = await dtQuery(STOP_QUERY, { id: stopId, start: Math.floor(at / 1000) });
+        if (stale()) return;
+        const times = d.stop?.stoptimesWithoutPatterns || [];
+        if (!times.length) { box.replaceChildren(el("p", { class: "compare" }, "Pysäkiltä ei ole lähtöjä seuraavan kahden tunnin aikana.")); return; }
+        box.replaceChildren(heading("Seuraavat lähdöt, joihin ehdit"), ...times.map(t => {
+          const dep = (t.serviceDay + t.realtimeDeparture) * 1000;
+          return el("div", { class: "dep" },
+            el("span", { class: "dep-time" + (t.realtime ? " rt" : ""), title: t.realtime ? "Reaaliaikainen" : "Aikataulun mukainen" }, fmtTime(dep)),
+            el("span", { class: "dep-main" }, lineBadge(t.trip?.route?.shortName, t.trip?.route?.mode), ` ${t.headsign || ""}`),
+            el("span", { class: "dep-sub" }, `Lähde viimeistään ${fmtTime(dep - walkMs)}`));
+        }));
+      }
+    } catch (e) {
+      if (stale()) return;
+      const msg = e.kind === "key" ? ["Digitransit hylkäsi avaimen. ", el("button", { type: "button", class: "linklike", onclick: openKeySettings }, "Tarkista avain"), "."]
+        : e.kind === "rate" ? ["Lähtöjä haettiin liian monta kertaa lyhyessä ajassa. Yritä hetken päästä uudelleen."]
+        : [`Lähtöjen haku epäonnistui (${e.message}).`];
+      box.replaceChildren(el("p", { class: "compare" }, ...msg));
+    }
+  }
+
+  // Keep the times current while the page is open.
+  setInterval(() => {
+    const r = state.candidates[state.selected];
+    if (r && getKey() && document.visibilityState === "visible") showDepartures(r, { quiet: true });
+  }, 60000);
+
+  // key settings
+  const keyInput = document.getElementById("dtKey"), keyStatus = document.getElementById("keyStatus"), removeKeyBtn = document.getElementById("removeKey");
+  function renderKeyState() {
+    const has = !!getKey();
+    removeKeyBtn.hidden = !has;
+    keyInput.placeholder = has ? "Avain on tallennettu" : "Liitä avain tähän";
+  }
+  document.getElementById("saveKey").addEventListener("click", async () => {
+    const key = keyInput.value.trim();
+    if (!key) { keyStatus.textContent = "Liitä avain kenttään ensin."; return; }
+    keyStatus.textContent = "Tarkistetaan avainta…";
+    try {
+      await dtQuery("{ feeds { feedId } }", {}, key);
+      try { localStorage.setItem(KEY_STORE, key); } catch (_) { keyStatus.textContent = "Selain ei salli tallentamista (yksityinen selausikkuna?)."; return; }
+      keyInput.value = "";
+      keyStatus.replaceChildren(el("span", { class: "key-ok" }, "Avain toimii ja on tallennettu tähän selaimeen."));
+      renderKeyState();
+      const r = state.candidates[state.selected];
+      if (r) showDepartures(r);
+    } catch (e) {
+      keyStatus.textContent = e.kind === "key" ? "Digitransit hylkäsi avaimen. Tarkista, että kopioit koko avaimen ja että tilauksesi on voimassa."
+        : `Avainta ei voitu tarkistaa (${e.message}). Yritä uudelleen.`;
+    }
+  });
+  removeKeyBtn.addEventListener("click", () => {
+    try { localStorage.removeItem(KEY_STORE); } catch (_) {}
+    keyStatus.textContent = "Avain poistettu tästä selaimesta.";
+    renderKeyState();
+    const r = state.candidates[state.selected];
+    if (r) showDepartures(r);
+  });
+  renderKeyState();
 
   // ---------- my location ----------
   const locateBtn = document.getElementById("locateBtn");

@@ -708,12 +708,6 @@ button:focus-visible, .ticket:focus-visible, .zone-toggle:focus-visible, a:focus
       { enableHighAccuracy: true, timeout: 10000 },
     );
   });
-
-  // ---------- example so the page opens in a working state ----------
-  // Example: Tikkurila (C) -> Kamppi (A) with an AB ticket.
-  const example = { from: { lat: 60.2930, lon: 25.0395, label: "Esimerkki: Tikkurila" }, to: { lat: 60.1690, lon: 24.9320, label: "Esimerkki: Kamppi" } };
-  state.to = example.to; inputs.to.value = example.to.label; markers.to.setLatLng([example.to.lat, example.to.lon]).addTo(map);
-  setPoint("from", example.from);
 })();
 </script>
 </body>

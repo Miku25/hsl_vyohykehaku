@@ -675,7 +675,7 @@ button:focus-visible, .ticket:focus-visible, .zone-toggle:focus-visible, a:focus
   function wireSearch(kind) {
     const input = inputs[kind];
     const list = document.getElementById(kind + "Suggest");
-    let items = [], active = -1, timer = null, seq = 0;
+    let items = [], active = -1, timer = null, seq = 0, pending = null, release = null;
     const close = () => { list.hidden = true; active = -1; };
     const choose = it => { close(); setPoint(kind, { lat: it.lat, lon: it.lon, label: it.label }); input.blur(); };
     function render() {
@@ -690,24 +690,44 @@ button:focus-visible, .ticket:focus-visible, .zone-toggle:focus-visible, a:focus
     input.addEventListener("input", () => {
       const q = input.value.trim();
       clearTimeout(timer);
-      if (q.length < 2) { items = []; render(); if (!q) setPoint(kind, null, { keepView: true }); return; }
-      items = localStopMatches(q); active = -1; render();
+      release?.();
       const my = ++seq;
-      timer = setTimeout(async () => {
-        try {
-          const found = await photon(q);
-          if (my !== seq) return;
-          const names = new Set(items.map(i => i.label));
-          items = [...items, ...found.filter(f => !names.has(f.label))].slice(0, 8);
-          render();
-        } catch (_) {}
-      }, 280);
+      if (q.length < 2) { pending = null; items = []; render(); if (!q) setPoint(kind, null, { keepView: true }); return; }
+      // Stops match instantly from local data; show them while addresses and places load, then list them last.
+      const stops = localStopMatches(q).slice(0, 3);
+      items = stops; active = -1; render();
+      pending = new Promise(resolve => {
+        release = resolve;
+        timer = setTimeout(async () => {
+          try {
+            const found = await photon(q);
+            if (my === seq) {
+              const keep = items[active];
+              const seen = new Set();
+              const places = found.filter(f => { const k = norm(f.label + "|" + f.sub); return !seen.has(k) && seen.add(k); }).slice(0, 6);
+              const names = new Set(places.map(f => norm(f.label)));
+              items = [...places, ...stops.filter(s => !names.has(norm(s.label)))];
+              active = keep ? items.indexOf(keep) : -1;
+              render();
+            }
+          } catch (_) {}
+          resolve();
+        }, 280);
+      });
     });
-    input.addEventListener("keydown", e => {
+    input.addEventListener("keydown", async e => {
+      if (e.key === "Enter") {
+        e.preventDefault();
+        if (items[active]) return choose(items[active]);
+        // Enter before addresses have loaded waits for them, so the top address wins over a stop.
+        const my = seq;
+        if (pending) await pending;
+        if (my === seq && items[0]) choose(items[0]);
+        return;
+      }
       if (list.hidden) return;
       if (e.key === "ArrowDown") { active = Math.min(items.length - 1, active + 1); render(); e.preventDefault(); }
       else if (e.key === "ArrowUp") { active = Math.max(0, active - 1); render(); e.preventDefault(); }
-      else if (e.key === "Enter") { const it = items[active] || items[0]; if (it) choose(it); e.preventDefault(); }
       else if (e.key === "Escape") close();
     });
     input.addEventListener("blur", () => setTimeout(close, 120));

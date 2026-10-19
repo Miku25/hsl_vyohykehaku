@@ -102,6 +102,11 @@ input[type="search"]:focus { outline: 2px solid var(--accent); outline-offset: -
   color: var(--accent); cursor: pointer; display: grid; place-items: center;
 }
 .icon-btn svg { width: 18px; height: 18px; }
+.icon-btn .spinner { display: none; }
+.icon-btn[aria-busy="true"] svg { display: none; }
+.icon-btn[aria-busy="true"] .spinner { display: inline-block; }
+.suggest .s-kind.s-locate { color: var(--accent); display: grid; place-items: center; }
+.suggest .s-locate svg { width: 18px; height: 18px; }
 .suggest {
   position: absolute; z-index: 5; top: 100%; left: 0; right: 0; margin: 4px 0 0; padding: 4px; list-style: none;
   background: var(--panel); border: 1px solid var(--line); border-radius: 10px; box-shadow: var(--shadow);
@@ -220,6 +225,7 @@ button:focus-visible, .ticket:focus-visible, .zone-toggle:focus-visible, a:focus
           </div>
           <button class="icon-btn" id="locateBtn" type="button" title="Käytä omaa sijaintia" aria-label="Käytä omaa sijaintia">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="4"/><path d="M12 2v3M12 19v3M2 12h3M19 12h3"/></svg>
+            <span class="spinner" aria-hidden="true"></span>
           </button>
         </div>
       </div>
@@ -672,18 +678,33 @@ button:focus-visible, .ticket:focus-visible, .zone-toggle:focus-visible, a:focus
     });
   }
 
+  const LOCATE_ITEM = { label: "Oma sijainti", sub: "Käytä laitteen sijaintia lähtöpaikkana" };
+  const locateIcon = () => {
+    const s = el("span", { class: "s-kind s-locate", "aria-hidden": "true" });
+    s.innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="4"/><path d="M12 2v3M12 19v3M2 12h3M19 12h3"/></svg>';
+    return s;
+  };
+
   function wireSearch(kind) {
     const input = inputs[kind];
     const list = document.getElementById(kind + "Suggest");
     let items = [], active = -1, timer = null, seq = 0, pending = null, release = null;
     const close = () => { list.hidden = true; active = -1; };
-    const choose = it => { close(); setPoint(kind, { lat: it.lat, lon: it.lon, label: it.label }); input.blur(); };
+    const choose = it => {
+      close(); input.blur();
+      if (it === LOCATE_ITEM) useMyLocation();
+      else setPoint(kind, { lat: it.lat, lon: it.lon, label: it.label });
+    };
+    // Only the departure field offers the device location, and only while it is empty.
+    const emptyItems = () => kind === "from" ? [LOCATE_ITEM] : [];
+    input.addEventListener("focus", () => { if (!input.value.trim()) { items = emptyItems(); active = -1; render(); } });
     function render() {
       list.replaceChildren(...items.map((it, i) => el("li", {
         role: "option", "aria-selected": String(i === active),
         onmousedown: e => { e.preventDefault(); choose(it); },
       },
-        it.zone ? badge(it.zone, true) : el("span", { class: "s-kind" }, "·"),
+        it === LOCATE_ITEM ? locateIcon()
+          : it.zone ? badge(it.zone, true) : el("span", { class: "s-kind" }, "·"),
         el("div", { class: "s-text" }, el("div", { class: "s-main" }, it.label), it.sub ? el("div", { class: "s-sub" }, it.sub) : null))));
       list.hidden = !items.length;
     }
@@ -692,7 +713,7 @@ button:focus-visible, .ticket:focus-visible, .zone-toggle:focus-visible, a:focus
       clearTimeout(timer);
       release?.();
       const my = ++seq;
-      if (q.length < 2) { pending = null; items = []; render(); if (!q) setPoint(kind, null, { keepView: true }); return; }
+      if (q.length < 2) { pending = null; items = q ? [] : emptyItems(); active = -1; render(); if (!q) setPoint(kind, null, { keepView: true }); return; }
       // Stops match instantly from local data; show them while addresses and places load, then list them last.
       const stops = localStopMatches(q).slice(0, 3);
       items = stops; active = -1; render();
@@ -719,6 +740,7 @@ button:focus-visible, .ticket:focus-visible, .zone-toggle:focus-visible, a:focus
       if (e.key === "Enter") {
         e.preventDefault();
         if (items[active]) return choose(items[active]);
+        if (!input.value.trim()) return;
         // Enter before addresses have loaded waits for them, so the top address wins over a stop.
         const my = seq;
         if (pending) await pending;
@@ -736,14 +758,38 @@ button:focus-visible, .ticket:focus-visible, .zone-toggle:focus-visible, a:focus
   wireSearch("to");
 
   // ---------- my location ----------
-  document.getElementById("locateBtn").addEventListener("click", () => {
-    if (!navigator.geolocation) { resultEl.replaceChildren(el("div", { class: "status warn" }, el("p", {}, "Selain ei tue sijaintia. Valitse lähtöpaikka hakemalla tai klikkaamalla karttaa."))); return; }
+  const locateBtn = document.getElementById("locateBtn");
+  locateBtn.addEventListener("click", useMyLocation);
+
+  function locationError(text) {
+    inputs.from.placeholder = "Osoite, paikka tai pysäkki";
+    resultEl.replaceChildren(el("div", { class: "status warn" }, el("p", {}, text)));
+  }
+
+  function useMyLocation() {
+    if (locateBtn.getAttribute("aria-busy") === "true") return;
+    if (!window.isSecureContext) return locationError("Oma sijainti toimii vain verkko-osoitteessa (https), ei tiedostona avattuna. Hae lähtöpaikka nimellä tai klikkaa karttaa.");
+    if (!navigator.geolocation) return locationError("Selain ei tue sijaintia. Hae lähtöpaikka nimellä tai klikkaa karttaa.");
+    locateBtn.setAttribute("aria-busy", "true");
+    inputs.from.value = "";
+    inputs.from.placeholder = "Haetaan sijaintia…";
+    // On failure the previous departure stays on the map, so put its name back too.
+    const done = () => { locateBtn.setAttribute("aria-busy", "false"); inputs.from.value = state.from ? state.from.label : ""; };
     navigator.geolocation.getCurrentPosition(
-      pos => setPoint("from", { lat: pos.coords.latitude, lon: pos.coords.longitude, label: "Oma sijainti" }),
-      () => resultEl.replaceChildren(el("div", { class: "status warn" }, el("p", {}, "Sijaintia ei saatu. Salli sijainti selaimessa tai valitse lähtöpaikka hakemalla tai klikkaamalla karttaa."))),
-      { enableHighAccuracy: true, timeout: 10000 },
+      pos => {
+        done();
+        inputs.from.placeholder = "Osoite, paikka tai pysäkki";
+        setPoint("from", { lat: pos.coords.latitude, lon: pos.coords.longitude, label: "Oma sijainti" });
+      },
+      err => {
+        done();
+        if (err.code === 1) locationError("Sijainnin käyttö on estetty. Salli sijainti tälle sivulle selaimen osoiterivin asetuksista (puhelimessa myös laitteen sijaintiasetuksista) ja yritä uudelleen.");
+        else if (err.code === 3) locationError("Sijainnin haku kesti liian kauan. Yritä uudelleen tai hae lähtöpaikka nimellä.");
+        else locationError("Laite ei saanut sijaintia selville. Tarkista, että sijaintipalvelu on päällä, tai hae lähtöpaikka nimellä.");
+      },
+      { enableHighAccuracy: true, timeout: 15000, maximumAge: 60000 },
     );
-  });
+  }
 })();
 </script>
 </body>

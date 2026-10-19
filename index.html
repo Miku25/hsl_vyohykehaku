@@ -110,6 +110,8 @@ input[type="search"] {
 input[type="search"]:focus { outline: 2px solid var(--accent); outline-offset: -1px; border-color: transparent; }
 .text-input { flex: 1; min-width: 0; padding: 9px 10px; border: 1px solid var(--line); border-radius: 9px; background: var(--bg); color: var(--fg); font: inherit; }
 .text-input:focus { outline: 2px solid var(--accent); outline-offset: -1px; border-color: transparent; }
+.time-row { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+.time-row .text-input { flex: 1 1 180px; padding: 6px 10px; }
 
 /* Settings (Digitransit key) */
 .settings { border-top: 1px solid var(--line); padding-top: 12px; }
@@ -278,6 +280,14 @@ button:focus-visible, .ticket:focus-visible, .zone-toggle:focus-visible, a:focus
           <span class="dot to" aria-hidden="true"></span>
           <input type="search" id="toInput" autocomplete="off" placeholder="Minne olet menossa?" aria-autocomplete="list" aria-controls="toSuggest">
           <ul class="suggest" id="toSuggest" role="listbox" hidden></ul>
+        </div>
+      </div>
+      <div class="field">
+        <span class="field-label" id="timeLabel">Lähtöaika</span>
+        <div class="time-row" role="group" aria-labelledby="timeLabel">
+          <button type="button" class="ticket" id="timeNow" aria-pressed="true">Nyt</button>
+          <button type="button" class="ticket" id="timeLater" aria-pressed="false">Valitse aika</button>
+          <input type="datetime-local" id="departAt" class="text-input" aria-label="Lähtöaika" hidden>
         </div>
       </div>
       <p class="hint">Voit myös klikata karttaa ja valita kohdan lähtö- tai määränpääksi.</p>
@@ -507,7 +517,9 @@ button:focus-visible, .ticket:focus-visible, .zone-toggle:focus-visible, a:focus
   });
 
   // ---------- route state ----------
-  const state = { from: null, to: null, ticket: "AB", selected: null, candidates: [], token: 0 };
+  // departAt: chosen departure time in ms, or null for "now"
+  const state = { from: null, to: null, ticket: "AB", selected: null, candidates: [], token: 0, departAt: null };
+  const departBase = () => state.departAt ?? Date.now();
   try { const t = localStorage.getItem("hslTicket"); if (TICKETS.includes(t)) state.ticket = t; } catch (_) {}
 
   const pinSvg = (fill, ring) => `<svg viewBox="0 0 26 26" width="26" height="26"><circle cx="13" cy="13" r="8" fill="${ring}" stroke="${fill}" stroke-width="5"/></svg>`;
@@ -571,7 +583,9 @@ button:focus-visible, .ticket:focus-visible, .zone-toggle:focus-visible, a:focus
   const minutes = sec => Math.max(1, Math.round(sec / 60));
   const fmtDist = m => m < 1000 ? `${Math.round(m / 10) * 10} m` : `${(m / 1000).toFixed(1).replace(".", ",")} km`;
   const reittiopasPoint = p => p ? encodeURIComponent(`${p.label}::${p.lat.toFixed(6)},${p.lon.toFixed(6)}`) : "-";
-  const reittiopasUrl = (a, b) => `https://reittiopas.hsl.fi/reitti/${reittiopasPoint(a)}/${reittiopasPoint(b)}`;
+  // Reittiopas takes the departure time as epoch seconds in ?time=
+  const reittiopasUrl = (a, b, timeMs) => `https://reittiopas.hsl.fi/reitti/${reittiopasPoint(a)}/${reittiopasPoint(b)}`
+    + (timeMs != null ? `?time=${Math.floor(timeMs / 1000)}` : "");
   // Google Maps URLs allow one travel mode per link and no via-stops on transit routes
   const gmapsUrl = (a, b, mode) => "https://www.google.com/maps/dir/?" + new URLSearchParams({
     api: "1", origin: `${a.lat.toFixed(6)},${a.lon.toFixed(6)}`, destination: `${b.lat.toFixed(6)},${b.lon.toFixed(6)}`, travelmode: mode,
@@ -666,27 +680,35 @@ button:focus-visible, .ticket:focus-visible, .zone-toggle:focus-visible, a:focus
     select(0, opts);
   }
 
-  async function select(i, opts = {}) {
-    const r = state.candidates[i];
-    if (!r) return;
-    state.selected = i;
-    resultEl.querySelectorAll(".stop-item").forEach((b, j) => b.setAttribute("aria-pressed", String(j === i)));
+  // Links and departures depend on the departure time; the walking route does not.
+  function renderTimeDependent(r) {
     const actions = document.getElementById("actions");
+    if (!actions) return;
     const stopPoint = { lat: r.s.lat, lon: r.s.lon, label: `${r.s.name} (${r.s.code})` };
+    const atStop = departBase() + r.sec * 1000;
     const link = (cls, href, text) => el("a", { class: cls, href, target: "_blank", rel: "noopener" }, text);
     actions.replaceChildren(
       el("div", { class: "link-group" },
         el("h2", { class: "section-label" }, "HSL Reittiopas"),
         el("div", { class: "btn-row" },
-          link("btn", reittiopasUrl(stopPoint, state.to), state.to ? "Jatka pysäkiltä ↗" : "Pysäkin reitit ↗"),
-          state.to ? link("btn secondary", reittiopasUrl(state.from, state.to), "Vertaa: koko matka ↗") : null)),
+          link("btn", reittiopasUrl(stopPoint, state.to, atStop), state.to ? "Jatka pysäkiltä ↗" : "Pysäkin reitit ↗"),
+          state.to ? link("btn secondary", reittiopasUrl(state.from, state.to, state.departAt), "Vertaa: koko matka ↗") : null)),
       el("div", { class: "link-group" },
         el("h2", { class: "section-label" }, "Google Maps"),
         el("div", { class: "btn-row" },
           link("btn secondary", gmapsUrl(state.from, stopPoint, "walking"), "Kävely pysäkille ↗"),
-          state.to ? link("btn secondary", gmapsUrl(stopPoint, state.to, "transit"), "Pysäkiltä perille ↗") : null)),
+          state.to ? link("btn secondary", gmapsUrl(stopPoint, state.to, "transit"), "Pysäkiltä perille ↗") : null),
+        state.departAt != null ? el("p", { class: "hint", style: "margin:0" }, "Google Maps avautuu nykyhetkeen: lähtöaikaa ei voi välittää sille linkissä.") : null),
     );
     showDepartures(r);
+  }
+
+  async function select(i, opts = {}) {
+    const r = state.candidates[i];
+    if (!r) return;
+    state.selected = i;
+    resultEl.querySelectorAll(".stop-item").forEach((b, j) => b.setAttribute("aria-pressed", String(j === i)));
+    renderTimeDependent(r);
 
     const token = state.token;
     walkLayer.clearLayers();
@@ -886,10 +908,10 @@ button:focus-visible, .ticket:focus-visible, .zone-toggle:focus-visible, a:focus
       return;
     }
     if (!quiet) box.replaceChildren(el("p", { class: "empty" }, el("span", { class: "spinner" }), " Haetaan lähtöjä…"));
-    const token = state.token, sel = state.selected, to = state.to;
-    const stale = () => token !== state.token || sel !== state.selected || to !== state.to;
+    const token = state.token, sel = state.selected, to = state.to, dep = state.departAt;
+    const stale = () => token !== state.token || sel !== state.selected || to !== state.to || dep !== state.departAt;
     const walkMs = r.sec * 1000;
-    const at = Date.now() + walkMs; // only connections you can still reach on foot
+    const at = departBase() + walkMs; // only connections you can still reach on foot
     const stopId = "HSL:" + r.s.id;
     const heading = text => el("h2", { class: "section-label", style: "margin:0" }, text);
     try {
@@ -898,7 +920,7 @@ button:focus-visible, .ticket:focus-visible, .zone-toggle:focus-visible, a:focus
         if (stale()) return;
         const its = (d.planConnection?.edges || []).map(e => e.node).filter(n => n.legs.some(l => l.transitLeg));
         if (!its.length) { box.replaceChildren(el("p", { class: "compare" }, "Pysäkiltä ei löytynyt jatkoyhteyttä perille lähiaikoina.")); return; }
-        box.replaceChildren(heading("Seuraavat jatkoyhteydet, joihin ehdit"), ...its.map(n => {
+        box.replaceChildren(heading("Seuraavat jatkoyhteydet, joihin ehdit" + whenSuffix()), ...its.map(n => {
           const transit = n.legs.filter(l => l.transitLeg);
           const first = transit[0];
           const dep = first.start.estimated?.time || first.start.scheduledTime;
@@ -915,7 +937,7 @@ button:focus-visible, .ticket:focus-visible, .zone-toggle:focus-visible, a:focus
         if (stale()) return;
         const times = d.stop?.stoptimesWithoutPatterns || [];
         if (!times.length) { box.replaceChildren(el("p", { class: "compare" }, "Pysäkiltä ei ole lähtöjä seuraavan kahden tunnin aikana.")); return; }
-        box.replaceChildren(heading("Seuraavat lähdöt, joihin ehdit"), ...times.map(t => {
+        box.replaceChildren(heading("Seuraavat lähdöt, joihin ehdit" + whenSuffix()), ...times.map(t => {
           const dep = (t.serviceDay + t.realtimeDeparture) * 1000;
           return el("div", { class: "dep" },
             el("span", { class: "dep-time" + (t.realtime ? " rt" : ""), title: t.realtime ? "Reaaliaikainen" : "Aikataulun mukainen" }, fmtTime(dep)),
@@ -970,6 +992,38 @@ button:focus-visible, .ticket:focus-visible, .zone-toggle:focus-visible, a:focus
     if (r) showDepartures(r);
   });
   renderKeyState();
+
+  // ---------- departure time ----------
+  const timeNowBtn = document.getElementById("timeNow"), timeLaterBtn = document.getElementById("timeLater"), departInput = document.getElementById("departAt");
+  const toLocalInput = ms => { const d = new Date(ms); return `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}T${pad2(d.getHours())}:${pad2(d.getMinutes())}`; };
+  function whenSuffix() {
+    if (state.departAt == null) return "";
+    const d = new Date(state.departAt), today = new Date().toDateString() === d.toDateString();
+    return ` (lähtö ${today ? "" : d.toLocaleDateString("fi-FI", { weekday: "short", day: "numeric", month: "numeric" }) + " "}${fmtTime(d)})`;
+  }
+  function setDepartAt(ms) {
+    state.departAt = ms;
+    timeNowBtn.setAttribute("aria-pressed", String(ms == null));
+    timeLaterBtn.setAttribute("aria-pressed", String(ms != null));
+    departInput.hidden = ms == null;
+    const r = state.candidates[state.selected];
+    if (r) renderTimeDependent(r);
+  }
+  timeNowBtn.addEventListener("click", () => setDepartAt(null));
+  timeLaterBtn.addEventListener("click", () => {
+    if (state.departAt == null) {
+      // Start from the next full five minutes, a time people actually pick.
+      const five = 5 * 60000, start = Math.ceil((Date.now() + five) / five) * five;
+      departInput.value = toLocalInput(start);
+      setDepartAt(start);
+    }
+    departInput.focus();
+    try { departInput.showPicker?.(); } catch (_) {}
+  });
+  departInput.addEventListener("change", () => {
+    const ms = departInput.value ? new Date(departInput.value).getTime() : NaN;
+    if (!Number.isNaN(ms)) setDepartAt(ms);
+  });
 
   // ---------- resizable panel ----------
   const panelEl = document.querySelector(".panel");

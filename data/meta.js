@@ -1,1 +1,1 @@
-window.HSL_META={"feedVersion":"2026-10-17 06:35:03","prices":{"AB":3.3,"BC":3.3,"CD":3.3,"DE":3.3,"ABC":4.5,"BCD":4.5,"ABCD":5.0,"CDE":4.5,"BCDE":5.0,"ABCDE":6.1},"approxZones":["E"],"builtAt":"2026-10-19T08:23:45+00:00"};
+window.HSL_META={"feedVersion":"2026-10-20 04:02:46","prices":{"AB":3.3,"BC":3.3,"CD":3.3,"DE":3.3,"ABC":4.5,"BCD":4.5,"ABCD":5.0,"CDE":4.5,"BCDE":5.0,"ABCDE":6.1},"approxZones":["E"]};
